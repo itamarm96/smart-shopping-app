@@ -42,8 +42,9 @@ export interface VoiceFABRef {
     resumeListening: () => void;
 }
 
-// Auto-stop mic after this many ms of silence (no final transcript)
-const INACTIVITY_TIMEOUT_MS = 60000; // 60 seconds
+const INACTIVITY_TIMEOUT_MS = 60000;
+// After resuming from TTS, ignore transcripts for this long
+const POST_RESUME_COOLDOWN_MS = 2000;
 
 const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
     ({ onTranscript, isProcessing, isMuted }, ref) => {
@@ -54,14 +55,13 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
         const shouldRestartRef = useRef(false);
         const wasListeningBeforeMuteRef = useRef(false);
         const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-        const userActivatedRef = useRef(false); // tracks if user manually toggled
+        const userActivatedRef = useRef(false);
+        const cooldownActiveRef = useRef(false);
+        const resumeTimestampRef = useRef(0);
 
         const resetInactivityTimer = useCallback(() => {
-            if (inactivityTimerRef.current) {
-                clearTimeout(inactivityTimerRef.current);
-            }
+            if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
             inactivityTimerRef.current = setTimeout(() => {
-                // Auto-stop after inactivity
                 if (shouldRestartRef.current) {
                     shouldRestartRef.current = false;
                     recognitionRef.current?.stop();
@@ -80,11 +80,20 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
             }
         }, []);
 
-        const startRecognition = useCallback(() => {
+        const startRecognition = useCallback((isResumeAfterTTS: boolean = false) => {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 setIsSupported(false);
                 return;
+            }
+
+            // If resuming after TTS, activate cooldown to ignore leftover echo
+            if (isResumeAfterTTS) {
+                cooldownActiveRef.current = true;
+                resumeTimestampRef.current = Date.now();
+                setTimeout(() => {
+                    cooldownActiveRef.current = false;
+                }, POST_RESUME_COOLDOWN_MS);
             }
 
             const recognition = new SpeechRecognition();
@@ -110,10 +119,15 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                     }
                 }
 
+                // During cooldown, discard everything (likely TTS echo)
+                if (cooldownActiveRef.current) {
+                    setInterimText("");
+                    return;
+                }
+
                 setInterimText(interim);
 
-                if (finalTranscript.trim()) {
-                    // Reset inactivity timer on real speech
+                if (finalTranscript.trim() && finalTranscript.trim().length >= 2) {
                     resetInactivityTimer();
                     onTranscript(finalTranscript.trim());
                     setInterimText("");
@@ -165,7 +179,6 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
             setInterimText("");
         }, [clearInactivityTimer]);
 
-        // Expose pause/resume to parent
         useImperativeHandle(ref, () => ({
             pauseListening: () => {
                 if (isListening) {
@@ -174,24 +187,23 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                 }
             },
             resumeListening: () => {
-                // Only resume if user originally activated the mic
                 if (wasListeningBeforeMuteRef.current && userActivatedRef.current) {
                     wasListeningBeforeMuteRef.current = false;
-                    startRecognition();
+                    // Resume with TTS cooldown flag
+                    startRecognition(true);
                 } else {
                     wasListeningBeforeMuteRef.current = false;
                 }
             },
         }), [isListening, stopRecognition, startRecognition]);
 
-        // Handle external mute/unmute
         useEffect(() => {
             if (isMuted && isListening) {
                 wasListeningBeforeMuteRef.current = true;
                 stopRecognition();
             } else if (!isMuted && wasListeningBeforeMuteRef.current && userActivatedRef.current) {
                 wasListeningBeforeMuteRef.current = false;
-                const timer = setTimeout(() => startRecognition(), 800);
+                const timer = setTimeout(() => startRecognition(true), 500);
                 return () => clearTimeout(timer);
             }
         }, [isMuted, isListening, stopRecognition, startRecognition]);
@@ -202,18 +214,14 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                 stopRecognition();
             } else {
                 userActivatedRef.current = true;
-                startRecognition();
+                startRecognition(false);
             }
         };
 
         useEffect(() => {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                setIsSupported(false);
-            }
-            return () => {
-                stopRecognition();
-            };
+            if (!SpeechRecognition) setIsSupported(false);
+            return () => stopRecognition();
         }, [stopRecognition]);
 
         if (!isSupported) return null;
