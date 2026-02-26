@@ -25,6 +25,9 @@ const CATEGORY_META: Record<string, { icon: string; color: string }> = {
 const STORAGE_KEY = "smart-shopping-list";
 let globalIdCounter = 1000;
 
+// Change this version to aggressively force PWA cache clear on clients
+const APP_VERSION = "v1.0.4";
+
 function saveToStorage(categories: Category[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(categories));
@@ -54,10 +57,46 @@ export default function Home() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(true);
   const voiceFABRef = useRef<VoiceFABRef>(null);
+
+  // Aggressive Cache Buster
+  useEffect(() => {
+    const currentVersion = localStorage.getItem("app-version");
+
+    if (currentVersion !== APP_VERSION) {
+      console.log(`Upgrading app from ${currentVersion} to ${APP_VERSION}...`);
+
+      // Wipe all service worker caches
+      if ("caches" in window) {
+        caches.keys().then((names) => {
+          names.forEach((name) => caches.delete(name));
+        });
+      }
+
+      // Update the saved version
+      localStorage.setItem("app-version", APP_VERSION);
+
+      // If there's an active service worker, tell it to update, then force a hard reload
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+          regs.forEach((reg) => reg.update());
+        }).finally(() => {
+          window.location.reload();
+        });
+      } else {
+        window.location.reload();
+      }
+    } else {
+      setCheckingUpdate(false);
+    }
+  }, []);
 
   // Register service worker & listen for updates
   useEffect(() => {
+    // Only register SW if we're not currently cache-busting
+    if (checkingUpdate) return;
+
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").then((registration) => {
         // Check for updates periodically
@@ -86,10 +125,11 @@ export default function Home() {
       window.removeEventListener("offline", handleOffline);
       window.removeEventListener("online", handleOnline);
     };
-  }, []);
+  }, [checkingUpdate]);
 
   // Load saved list on startup
   useEffect(() => {
+    if (checkingUpdate) return;
     const saved = loadFromStorage();
     if (saved && saved.length > 0) {
       setCategories(saved);
@@ -102,7 +142,7 @@ export default function Home() {
         }, 0);
       globalIdCounter = maxId + 100;
     }
-  }, []);
+  }, [checkingUpdate]);
 
   // Save to localStorage whenever categories change
   useEffect(() => {
