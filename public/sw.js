@@ -1,4 +1,4 @@
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CACHE_NAME = `smart-shopping-v${CACHE_VERSION}`;
 
 // Files to cache for offline use
