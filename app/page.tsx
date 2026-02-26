@@ -1,65 +1,378 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback, useEffect, useRef } from "react";
+import { Category, ShoppingItem } from "@/lib/types";
+import { speakHebrew, preloadVoices } from "@/lib/tts";
+import InitialInput from "@/components/InitialInput";
+import ShoppingList from "@/components/ShoppingList";
+import CommandInput from "@/components/CommandInput";
+import VoiceFAB, { VoiceFABRef } from "@/components/VoiceFAB";
+
+type AppState = "initial" | "categorizing" | "shopping";
+
+const CATEGORY_META: Record<string, { icon: string; color: string }> = {
+  "פירות וירקות": { icon: "🥬", color: "#22c55e" },
+  "בשר ודגים": { icon: "🥩", color: "#ef4444" },
+  "חלב וקירור": { icon: "🧀", color: "#3b82f6" },
+  "קפואים": { icon: "🧊", color: "#06b6d4" },
+  "יבש/מזווה": { icon: "🫙", color: "#f59e0b" },
+  "לחם ומאפים": { icon: "🍞", color: "#d97706" },
+  "פארם וניקיון": { icon: "🧴", color: "#8b5cf6" },
+  "שתייה": { icon: "🥤", color: "#ec4899" },
+  "אחר": { icon: "🛒", color: "#6b7280" },
+};
+
+const STORAGE_KEY = "smart-shopping-list";
+let globalIdCounter = 1000;
+
+// localStorage helpers
+function saveToStorage(categories: Category[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(categories));
+  } catch {
+    // Storage full or unavailable
+  }
+}
+
+function loadFromStorage(): Category[] | null {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (data) return JSON.parse(data);
+  } catch {
+    // Parse error
+  }
+  return null;
+}
+
+function clearStorage() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
+}
 
 export default function Home() {
+  const [appState, setAppState] = useState<AppState>("initial");
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [assistantMessage, setAssistantMessage] = useState<string>("");
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [offlineWarning, setOfflineWarning] = useState(false);
+  const voiceFABRef = useRef<VoiceFABRef>(null);
+
+  // Register service worker
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch((err) => {
+        console.error("SW registration failed:", err);
+      });
+    }
+    preloadVoices();
+
+    // Listen for online/offline
+    const handleOffline = () => setOfflineWarning(true);
+    const handleOnline = () => setOfflineWarning(false);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    if (!navigator.onLine) setOfflineWarning(true);
+
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
+
+  // Load saved list on startup
+  useEffect(() => {
+    const saved = loadFromStorage();
+    if (saved && saved.length > 0) {
+      setCategories(saved);
+      setAppState("shopping");
+      // Set globalIdCounter to avoid collisions
+      const maxId = saved
+        .flatMap((c) => c.items)
+        .reduce((max, item) => {
+          const num = parseInt(item.id.replace(/\D/g, ""), 10);
+          return isNaN(num) ? max : Math.max(max, num);
+        }, 0);
+      globalIdCounter = maxId + 100;
+    }
+  }, []);
+
+  // Save to localStorage whenever categories change
+  useEffect(() => {
+    if (categories.length > 0) {
+      saveToStorage(categories);
+    }
+  }, [categories]);
+
+  useEffect(() => {
+    if (assistantMessage) {
+      const timer = setTimeout(() => setAssistantMessage(""), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [assistantMessage]);
+
+  const handleCategorize = async (text: string) => {
+    setAppState("categorizing");
+    try {
+      const res = await fetch("/api/categorize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("Failed to categorize");
+      const data = await res.json();
+      setCategories(data.categories);
+      setAppState("shopping");
+    } catch (error) {
+      console.error("Categorize error:", error);
+      setAppState("initial");
+      alert("שגיאה בעיבוד הרשימה. בדקו את חיבור הרשת ומפתח ה-API.");
+    }
+  };
+
+  const handleToggleItem = useCallback((itemId: string) => {
+    setCategories((prev) =>
+      prev.map((cat) => ({
+        ...cat,
+        items: cat.items.map((item) =>
+          item.id === itemId ? { ...item, checked: !item.checked } : item
+        ),
+      }))
+    );
+  }, []);
+
+  const getAllItems = useCallback((): ShoppingItem[] => {
+    return categories.flatMap((c) => c.items);
+  }, [categories]);
+
+  const addNewItems = useCallback(
+    (newItems: { name: string; category: string }[]) => {
+      setCategories((prev) => {
+        const updated = prev.map((c) => ({ ...c, items: [...c.items] }));
+        for (const newItem of newItems) {
+          const catName = newItem.category || "אחר";
+          const existingCat = updated.find((c) => c.name === catName);
+          const item: ShoppingItem = {
+            id: `item-new-${globalIdCounter++}`,
+            name: newItem.name,
+            category: catName,
+            checked: false,
+          };
+          if (existingCat) {
+            existingCat.items.push(item);
+          } else {
+            const meta = CATEGORY_META[catName] || CATEGORY_META["אחר"];
+            updated.push({
+              name: catName,
+              icon: meta.icon,
+              color: meta.color,
+              items: [item],
+            });
+          }
+        }
+        return updated;
+      });
+    },
+    []
+  );
+
+  const editItems = useCallback(
+    (editedItems: { oldName: string; newName: string }[]) => {
+      setCategories((prev) =>
+        prev.map((cat) => ({
+          ...cat,
+          items: cat.items.map((item) => {
+            const edit = editedItems.find(
+              (e) =>
+                item.name === e.oldName ||
+                item.name.includes(e.oldName) ||
+                e.oldName.includes(item.name)
+            );
+            return edit ? { ...item, name: edit.newName } : item;
+          }),
+        }))
+      );
+    },
+    []
+  );
+
+  const removeItems = useCallback(
+    (removedNames: string[]) => {
+      setCategories((prev) => {
+        const updated = prev.map((cat) => ({
+          ...cat,
+          items: cat.items.filter((item) => {
+            const shouldRemove = removedNames.some(
+              (name) =>
+                item.name === name ||
+                item.name.includes(name) ||
+                name.includes(item.name)
+            );
+            return !shouldRemove;
+          }),
+        }));
+        return updated.filter((cat) => cat.items.length > 0);
+      });
+    },
+    []
+  );
+
+  const handleAssistantCommand = useCallback(
+    async (text: string) => {
+      if (text.length < 2) return;
+
+      setIsProcessing(true);
+      voiceFABRef.current?.pauseListening();
+
+      try {
+        const res = await fetch("/api/assistant", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: text,
+            items: getAllItems(),
+          }),
+        });
+        if (!res.ok) throw new Error("Assistant request failed");
+        const data = await res.json();
+
+        if (data.updatedItems?.length > 0) {
+          setCategories((prev) =>
+            prev.map((cat) => ({
+              ...cat,
+              items: cat.items.map((item) => {
+                const shouldCheck = data.updatedItems.some(
+                  (name: string) =>
+                    item.name === name ||
+                    item.name.includes(name) ||
+                    name.includes(item.name)
+                );
+                return shouldCheck ? { ...item, checked: true } : item;
+              }),
+            }))
+          );
+        }
+
+        if (data.uncheckedItems?.length > 0) {
+          setCategories((prev) =>
+            prev.map((cat) => ({
+              ...cat,
+              items: cat.items.map((item) => {
+                const shouldUncheck = data.uncheckedItems.some(
+                  (name: string) =>
+                    item.name === name ||
+                    item.name.includes(name) ||
+                    name.includes(item.name)
+                );
+                return shouldUncheck ? { ...item, checked: false } : item;
+              }),
+            }))
+          );
+        }
+
+        if (data.editedItems?.length > 0) editItems(data.editedItems);
+        if (data.removedItems?.length > 0) removeItems(data.removedItems);
+        if (data.newItems?.length > 0) addNewItems(data.newItems);
+
+        if (data.voiceResponse) {
+          setAssistantMessage(data.voiceResponse);
+          setIsSpeaking(true);
+          await speakHebrew(data.voiceResponse);
+          setIsSpeaking(false);
+        }
+      } catch (error) {
+        console.error("Assistant error:", error);
+        setAssistantMessage("שגיאה בתקשורת עם העוזר. בדקו חיבור לרשת.");
+      } finally {
+        setIsProcessing(false);
+        setTimeout(() => {
+          voiceFABRef.current?.resumeListening();
+        }, 800);
+      }
+    },
+    [getAllItems, addNewItems, editItems, removeItems]
+  );
+
+  const handleResetRequest = () => setShowResetConfirm(true);
+  const handleResetConfirm = () => {
+    setCategories([]);
+    setAppState("initial");
+    setAssistantMessage("");
+    setShowResetConfirm(false);
+    clearStorage();
+  };
+  const handleResetCancel = () => setShowResetConfirm(false);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main className="app-main" dir="rtl">
+      {/* Offline warning banner */}
+      {offlineWarning && (
+        <div className="offline-banner">
+          📡 אין חיבור לאינטרנט — הרשימה נשמרת מקומית, אבל פקודות קוליות ו-AI לא יעבדו
+        </div>
+      )}
+
+      {appState === "initial" || appState === "categorizing" ? (
+        <InitialInput
+          onSubmit={handleCategorize}
+          isLoading={appState === "categorizing"}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      ) : (
+        <>
+          <ShoppingList
+            categories={categories}
+            onToggleItem={handleToggleItem}
+            onReset={handleResetRequest}
+          />
+
+          {assistantMessage && (
+            <div className="assistant-toast">
+              <div className="assistant-toast-content">
+                <span className="assistant-toast-icon">🤖</span>
+                <p className="assistant-toast-text">{assistantMessage}</p>
+              </div>
+            </div>
+          )}
+
+          {showResetConfirm && (
+            <div className="modal-overlay" onClick={handleResetCancel}>
+              <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-icon">⚠️</div>
+                <h3 className="modal-title">איפוס הרשימה</h3>
+                <p className="modal-text">
+                  האם אתה בטוח שברצונך לאפס את הרשימה?
+                  <br />
+                  כל הפריטים יימחקו לצמיתות.
+                </p>
+                <div className="modal-actions">
+                  <button className="modal-btn-cancel" onClick={handleResetCancel}>
+                    חזרה
+                  </button>
+                  <button className="modal-btn-confirm" onClick={handleResetConfirm}>
+                    כן, אפס
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <CommandInput
+            onSend={handleAssistantCommand}
+            isProcessing={isProcessing}
+          />
+
+          <VoiceFAB
+            ref={voiceFABRef}
+            onTranscript={handleAssistantCommand}
+            isProcessing={isProcessing}
+            isMuted={isSpeaking}
+          />
+        </>
+      )}
+    </main>
   );
 }
