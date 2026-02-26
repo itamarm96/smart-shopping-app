@@ -12,7 +12,7 @@ type AppState = "initial" | "categorizing" | "shopping";
 
 const CATEGORY_META: Record<string, { icon: string; color: string }> = {
   "פירות וירקות": { icon: "🥬", color: "#22c55e" },
-  "בשר ודגים": { icon: "🥩", color: "#ef4444" },
+  "בשר ודגים": { icon: "🥩", color: "#e07850" },
   "חלב וקירור": { icon: "🧀", color: "#3b82f6" },
   "קפואים": { icon: "🧊", color: "#06b6d4" },
   "יבש/מזווה": { icon: "🫙", color: "#f59e0b" },
@@ -25,31 +25,24 @@ const CATEGORY_META: Record<string, { icon: string; color: string }> = {
 const STORAGE_KEY = "smart-shopping-list";
 let globalIdCounter = 1000;
 
-// localStorage helpers
 function saveToStorage(categories: Category[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(categories));
-  } catch {
-    // Storage full or unavailable
-  }
+  } catch { /* Storage full or unavailable */ }
 }
 
 function loadFromStorage(): Category[] | null {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (data) return JSON.parse(data);
-  } catch {
-    // Parse error
-  }
+  } catch { /* Parse error */ }
   return null;
 }
 
 function clearStorage() {
   try {
     localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // Ignore
-  }
+  } catch { /* Ignore */ }
 }
 
 export default function Home() {
@@ -60,18 +53,29 @@ export default function Home() {
   const [assistantMessage, setAssistantMessage] = useState<string>("");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [offlineWarning, setOfflineWarning] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const voiceFABRef = useRef<VoiceFABRef>(null);
 
-  // Register service worker
+  // Register service worker & listen for updates
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch((err) => {
+      navigator.serviceWorker.register("/sw.js").then((registration) => {
+        // Check for updates periodically
+        registration.update();
+      }).catch((err) => {
         console.error("SW registration failed:", err);
       });
+
+      // Listen for SW update messages
+      navigator.serviceWorker.addEventListener("message", (event) => {
+        if (event.data?.type === "SW_UPDATED") {
+          setUpdateAvailable(true);
+        }
+      });
     }
+
     preloadVoices();
 
-    // Listen for online/offline
     const handleOffline = () => setOfflineWarning(true);
     const handleOnline = () => setOfflineWarning(false);
     window.addEventListener("offline", handleOffline);
@@ -90,7 +94,6 @@ export default function Home() {
     if (saved && saved.length > 0) {
       setCategories(saved);
       setAppState("shopping");
-      // Set globalIdCounter to avoid collisions
       const maxId = saved
         .flatMap((c) => c.items)
         .reduce((max, item) => {
@@ -224,7 +227,6 @@ export default function Home() {
   const handleAssistantCommand = useCallback(
     async (text: string) => {
       if (text.length < 2) return;
-
       setIsProcessing(true);
       voiceFABRef.current?.pauseListening();
 
@@ -232,10 +234,7 @@ export default function Home() {
         const res = await fetch("/api/assistant", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: text,
-            items: getAllItems(),
-          }),
+          body: JSON.stringify({ message: text, items: getAllItems() }),
         });
         if (!res.ok) throw new Error("Assistant request failed");
         const data = await res.json();
@@ -307,8 +306,20 @@ export default function Home() {
   };
   const handleResetCancel = () => setShowResetConfirm(false);
 
+  const handleUpdateRefresh = () => {
+    setUpdateAvailable(false);
+    window.location.reload();
+  };
+
   return (
     <main className="app-main" dir="rtl">
+      {/* Update available banner */}
+      {updateAvailable && (
+        <div className="update-banner" onClick={handleUpdateRefresh}>
+          🆕 גרסה חדשה זמינה! לחץ כאן לעדכון
+        </div>
+      )}
+
       {/* Offline warning banner */}
       {offlineWarning && (
         <div className="offline-banner">

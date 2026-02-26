@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
 
 The departments are:
 - פירות וירקות (icon: 🥬, color: #22c55e)
-- בשר ודגים (icon: 🥩, color: #ef4444)
+- בשר ודגים (icon: 🥩, color: #e07850)
 - חלב וקירור (icon: 🧀, color: #3b82f6)
 - קפואים (icon: 🧊, color: #06b6d4)
 - יבש/מזווה (icon: 🫙, color: #f59e0b)
