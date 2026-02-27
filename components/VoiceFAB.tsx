@@ -8,95 +8,66 @@ interface VoiceFABProps {
     isMuted: boolean;
 }
 
-interface SpeechRecognitionEvent {
-    results: SpeechRecognitionResultList;
-    resultIndex: number;
-}
-
-interface SpeechRecognitionErrorEvent {
-    error: string;
-}
-
-interface SpeechRecognitionInstance extends EventTarget {
-    continuous: boolean;
-    interimResults: boolean;
-    lang: string;
-    start(): void;
-    stop(): void;
-    abort(): void;
-    onresult: ((event: SpeechRecognitionEvent) => void) | null;
-    onerror: ((event: SpeechRecognitionErrorEvent) => void) | null;
-    onend: (() => void) | null;
-    onstart: (() => void) | null;
-}
-
-declare global {
-    interface Window {
-        SpeechRecognition: new () => SpeechRecognitionInstance;
-        webkitSpeechRecognition: new () => SpeechRecognitionInstance;
-    }
-}
-
 export interface VoiceFABRef {
     pauseListening: () => void;
     resumeListening: () => void;
 }
-
-const INACTIVITY_TIMEOUT_MS = 60000;
-// After resuming from TTS, ignore transcripts for this long (increased from 2000 to 3500)
-// Mobile speakers can have a long physical echo decay
-const POST_RESUME_COOLDOWN_MS = 3500;
 
 const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
     ({ onTranscript, isProcessing, isMuted }, ref) => {
         const [isListening, setIsListening] = useState(false);
         const [isSupported, setIsSupported] = useState(true);
         const [interimText, setInterimText] = useState("");
-        const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
-        const shouldRestartRef = useRef(false);
-        const wasListeningBeforeMuteRef = useRef(false);
-        const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-        const userActivatedRef = useRef(false);
-        const cooldownActiveRef = useRef(false);
-        const resumeTimestampRef = useRef(0);
 
-        const resetInactivityTimer = useCallback(() => {
-            if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-            inactivityTimerRef.current = setTimeout(() => {
-                if (shouldRestartRef.current) {
-                    shouldRestartRef.current = false;
-                    recognitionRef.current?.stop();
-                    recognitionRef.current = null;
-                    setIsListening(false);
-                    setInterimText("");
-                    // We DO NOT set userActivatedRef.current = false here anymore,
-                    // so if the user clicks the button again, it works.
-                }
-            }, INACTIVITY_TIMEOUT_MS);
-        }, []);
+        // This ref tracks if the USER wants the mic to be on.
+        const userWantsListeningRef = useRef(false);
 
-        const clearInactivityTimer = useCallback(() => {
-            if (inactivityTimerRef.current) {
-                clearTimeout(inactivityTimerRef.current);
-                inactivityTimerRef.current = null;
+        // This tracks the actual speech recognition instance.
+        const recognitionRef = useRef<any>(null);
+
+        // We use a timeout to restart the mic if it drops dead
+        const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+        // A flag to quickly block all speech mapping if we are in a muted state
+        const blockAudioRef = useRef(false);
+
+        // Keep blockAudioRef synced with the prop, but add a 2 second tail to prevent echo
+        useEffect(() => {
+            if (isMuted) {
+                blockAudioRef.current = true;
+            } else {
+                // When TTS finishes, wait 2 seconds before unblocking the mic
+                const t = setTimeout(() => {
+                    blockAudioRef.current = false;
+                }, 2000);
+                return () => clearTimeout(t);
             }
+        }, [isMuted]);
+
+        const stopAndCleanup = useCallback(() => {
+            if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
+            if (recognitionRef.current) {
+                try {
+                    recognitionRef.current.onend = null;
+                    recognitionRef.current.onerror = null;
+                    recognitionRef.current.onresult = null;
+                    recognitionRef.current.stop();
+                } catch (e) {
+                    // Ignore abort errors
+                }
+                recognitionRef.current = null;
+            }
+            setInterimText("");
         }, []);
 
-        const startRecognition = useCallback((isResumeAfterTTS: boolean = false) => {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const startListening = useCallback(() => {
+            const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
             if (!SpeechRecognition) {
                 setIsSupported(false);
                 return;
             }
 
-            // If resuming after TTS, activate cooldown to ignore leftover echo
-            if (isResumeAfterTTS) {
-                cooldownActiveRef.current = true;
-                resumeTimestampRef.current = Date.now();
-                setTimeout(() => {
-                    cooldownActiveRef.current = false;
-                }, POST_RESUME_COOLDOWN_MS);
-            }
+            stopAndCleanup();
 
             const recognition = new SpeechRecognition();
             recognition.continuous = true;
@@ -105,14 +76,11 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
 
             recognition.onstart = () => {
                 setIsListening(true);
-                resetInactivityTimer();
             };
 
-            recognition.onresult = (event: SpeechRecognitionEvent) => {
-                // EXTREME ECHO PREVENTION:
-                // If the app is currently speaking (isMuted) or we are in the physical echo cooldown period,
-                // discard ALL audio results completely.
-                if (isMuted || cooldownActiveRef.current) {
+            recognition.onresult = (event: any) => {
+                // If TTS is speaking, or we are in the 2s cooldown tail, ignore everything immediately.
+                if (blockAudioRef.current) {
                     setInterimText("");
                     return;
                 }
@@ -131,37 +99,29 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
 
                 setInterimText(interim);
 
-                // Ignore extremely short transcripts which are often just noise/clicks
                 if (finalTranscript.trim() && finalTranscript.trim().length >= 2) {
-                    resetInactivityTimer();
                     onTranscript(finalTranscript.trim());
                     setInterimText("");
                 }
             };
 
-            recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-                console.error("Speech recognition error:", event.error);
-                if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+            recognition.onerror = (event: any) => {
+                console.warn("Speech error:", event.error);
+                if (event.error === 'not-allowed') {
+                    userWantsListeningRef.current = false;
+                    setIsListening(false);
                     setIsSupported(false);
-                    shouldRestartRef.current = false;
-                    userActivatedRef.current = false;
-                    clearInactivityTimer();
                 }
             };
 
             recognition.onend = () => {
-                // If the user wants us to be listening, try to restart
-                if (shouldRestartRef.current && userActivatedRef.current) {
-                    try {
-                        recognition.start();
-                    } catch {
-                        setIsListening(false);
-                        shouldRestartRef.current = false;
-                        clearInactivityTimer();
-                    }
-                } else {
-                    setIsListening(false);
-                    clearInactivityTimer();
+                setIsListening(false);
+                // If the user didn't explicitly turn it off, Android Chrome likely killed it.
+                // We recreate and restart it immediately.
+                if (userWantsListeningRef.current) {
+                    restartTimeoutRef.current = setTimeout(() => {
+                        startListening();
+                    }, 250);
                 }
             };
 
@@ -169,85 +129,55 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
 
             try {
                 recognition.start();
-                shouldRestartRef.current = true;
-            } catch {
+            } catch (e) {
                 setIsListening(false);
             }
-        }, [onTranscript, resetInactivityTimer, clearInactivityTimer]);
-
-        const stopRecognition = useCallback(() => {
-            shouldRestartRef.current = false;
-            clearInactivityTimer();
-            if (recognitionRef.current) {
-                recognitionRef.current.stop();
-                recognitionRef.current = null;
-            }
-            setIsListening(false);
-            setInterimText("");
-        }, [clearInactivityTimer]);
+        }, [onTranscript, stopAndCleanup]);
 
         useImperativeHandle(ref, () => ({
             pauseListening: () => {
-                if (isListening) {
-                    wasListeningBeforeMuteRef.current = true;
-                    stopRecognition();
-                }
+                // Do nothing to the actual stream, just let `blockAudioRef` reject everything!
+                // Stopping the stream entirely causes Android to lock up.
             },
             resumeListening: () => {
-                if (wasListeningBeforeMuteRef.current && userActivatedRef.current) {
-                    wasListeningBeforeMuteRef.current = false;
-                    // Resume with TTS cooldown flag
-                    startRecognition(true);
-                } else {
-                    wasListeningBeforeMuteRef.current = false;
-                }
-            },
-        }), [isListening, stopRecognition, startRecognition]);
-
-        useEffect(() => {
-            if (isMuted && isListening) {
-                wasListeningBeforeMuteRef.current = true;
-                stopRecognition();
-            } else if (!isMuted && wasListeningBeforeMuteRef.current && userActivatedRef.current) {
-                wasListeningBeforeMuteRef.current = false;
-                const timer = setTimeout(() => startRecognition(true), 500);
-                return () => clearTimeout(timer);
+                // The `blockAudioRef` handles resuming automatically after 2s.
             }
-        }, [isMuted, isListening, stopRecognition, startRecognition]);
+        }), []);
 
-        const toggleListening = () => {
-            if (isListening) {
-                userActivatedRef.current = false;
-                stopRecognition();
+        const toggleMic = () => {
+            if (userWantsListeningRef.current) {
+                // Turn OFF
+                userWantsListeningRef.current = false;
+                setIsListening(false);
+                stopAndCleanup();
             } else {
-                userActivatedRef.current = true;
-                startRecognition(false);
+                // Turn ON
+                userWantsListeningRef.current = true;
+                startListening();
             }
         };
 
         useEffect(() => {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) setIsSupported(false);
-            return () => stopRecognition();
-        }, [stopRecognition]);
+            return () => stopAndCleanup();
+        }, [stopAndCleanup]);
 
         if (!isSupported) return null;
 
         return (
             <>
-                {interimText && (
+                {interimText && !blockAudioRef.current && (
                     <div className="voice-interim-display">
                         <span className="voice-interim-text">{interimText}</span>
                     </div>
                 )}
 
                 <button
-                    onClick={toggleListening}
+                    onClick={toggleMic}
                     disabled={isProcessing}
                     className={`voice-fab ${isListening ? "voice-fab-active" : ""}`}
                     title={isListening ? "הפסק הקלטה" : "התחל הקלטה"}
                 >
-                    {isListening && <span className="voice-fab-pulse" />}
+                    {isListening && !isMuted && <span className="voice-fab-pulse" />}
                     <svg viewBox="0 0 24 24" className="voice-fab-icon">
                         {isListening ? (
                             <rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" />
