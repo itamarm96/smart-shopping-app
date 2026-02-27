@@ -69,7 +69,8 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                     recognitionRef.current = null;
                     setIsListening(false);
                     setInterimText("");
-                    userActivatedRef.current = false;
+                    // We DO NOT set userActivatedRef.current = false here anymore,
+                    // so if the user clicks the button again, it works.
                 }
             }, INACTIVITY_TIMEOUT_MS);
         }, []);
@@ -143,12 +144,14 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                 if (event.error === "not-allowed" || event.error === "service-not-allowed") {
                     setIsSupported(false);
                     shouldRestartRef.current = false;
+                    userActivatedRef.current = false;
                     clearInactivityTimer();
                 }
             };
 
             recognition.onend = () => {
-                if (shouldRestartRef.current) {
+                // If the user wants us to be listening, try to restart
+                if (shouldRestartRef.current && userActivatedRef.current) {
                     try {
                         recognition.start();
                     } catch {
