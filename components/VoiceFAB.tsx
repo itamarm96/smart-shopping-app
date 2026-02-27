@@ -43,8 +43,9 @@ export interface VoiceFABRef {
 }
 
 const INACTIVITY_TIMEOUT_MS = 60000;
-// After resuming from TTS, ignore transcripts for this long
-const POST_RESUME_COOLDOWN_MS = 2000;
+// After resuming from TTS, ignore transcripts for this long (increased from 2000 to 3500)
+// Mobile speakers can have a long physical echo decay
+const POST_RESUME_COOLDOWN_MS = 3500;
 
 const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
     ({ onTranscript, isProcessing, isMuted }, ref) => {
@@ -107,6 +108,14 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
             };
 
             recognition.onresult = (event: SpeechRecognitionEvent) => {
+                // EXTREME ECHO PREVENTION:
+                // If the app is currently speaking (isMuted) or we are in the physical echo cooldown period,
+                // discard ALL audio results completely.
+                if (isMuted || cooldownActiveRef.current) {
+                    setInterimText("");
+                    return;
+                }
+
                 let finalTranscript = "";
                 let interim = "";
 
@@ -119,14 +128,9 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
                     }
                 }
 
-                // During cooldown, discard everything (likely TTS echo)
-                if (cooldownActiveRef.current) {
-                    setInterimText("");
-                    return;
-                }
-
                 setInterimText(interim);
 
+                // Ignore extremely short transcripts which are often just noise/clicks
                 if (finalTranscript.trim() && finalTranscript.trim().length >= 2) {
                     resetInactivityTimer();
                     onTranscript(finalTranscript.trim());
