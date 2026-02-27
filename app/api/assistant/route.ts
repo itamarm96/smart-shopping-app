@@ -55,7 +55,19 @@ User message: ${message}`;
             response_format: { type: "json_object" },
         });
 
-        const responseText = chatCompletion.choices[0]?.message?.content || "{}";
+        let responseText = chatCompletion.choices[0]?.message?.content || "{}";
+
+        // Strip markdown code block wrappers if the model hallucinated them
+        responseText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+        // Extract just the JSON object between the braces
+        const firstBrace = responseText.indexOf("{");
+        const lastBrace = responseText.lastIndexOf("}");
+
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            responseText = responseText.substring(firstBrace, lastBrace + 1);
+        }
+
         const parsed = JSON.parse(responseText);
 
         return NextResponse.json({

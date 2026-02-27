@@ -31,18 +31,19 @@ const VoiceFAB = forwardRef<VoiceFABRef, VoiceFABProps>(
         // A flag to quickly block all speech mapping if we are in a muted state
         const blockAudioRef = useRef(false);
 
-        // Keep blockAudioRef synced with the prop, but add a 2 second tail to prevent echo
+        // Keep blockAudioRef synced with the muting and processing state,
+        // and add a 2 second tail to prevent speaker echo
         useEffect(() => {
-            if (isMuted) {
+            if (isMuted || isProcessing) {
                 blockAudioRef.current = true;
             } else {
-                // When TTS finishes, wait 2 seconds before unblocking the mic
+                // When TTS finishes and processing is done, wait 2 seconds before unblocking the mic
                 const t = setTimeout(() => {
                     blockAudioRef.current = false;
                 }, 2000);
                 return () => clearTimeout(t);
             }
-        }, [isMuted]);
+        }, [isMuted, isProcessing]);
 
         const stopAndCleanup = useCallback(() => {
             if (restartTimeoutRef.current) clearTimeout(restartTimeoutRef.current);
