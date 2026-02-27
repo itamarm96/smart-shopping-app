@@ -26,7 +26,7 @@ const STORAGE_KEY = "smart-shopping-list";
 let globalIdCounter = 1000;
 
 // Change this version to aggressively force PWA cache clear on clients
-const APP_VERSION = "v1.0.4";
+const APP_VERSION = "v1.0.5";
 
 function saveToStorage(categories: Category[]) {
   try {
@@ -132,9 +132,20 @@ export default function Home() {
     if (checkingUpdate) return;
     const saved = loadFromStorage();
     if (saved && saved.length > 0) {
-      setCategories(saved);
+      // Force refresh of colors and icons from CATEGORY_META
+      // so that UI updates (like changing meat color from red) apply to existing localStorage data
+      const updatedCategories = saved.map((cat) => {
+        const meta = CATEGORY_META[cat.name] || CATEGORY_META["אחר"];
+        return {
+          ...cat,
+          icon: meta.icon,
+          color: meta.color,
+        };
+      });
+
+      setCategories(updatedCategories);
       setAppState("shopping");
-      const maxId = saved
+      const maxId = updatedCategories
         .flatMap((c) => c.items)
         .reduce((max, item) => {
           const num = parseInt(item.id.replace(/\D/g, ""), 10);
