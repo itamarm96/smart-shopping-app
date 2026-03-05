@@ -6,7 +6,6 @@ import { speakHebrew, preloadVoices } from "@/lib/tts";
 import InitialInput from "@/components/InitialInput";
 import ShoppingList from "@/components/ShoppingList";
 import CommandInput from "@/components/CommandInput";
-import VoiceFAB, { VoiceFABRef } from "@/components/VoiceFAB";
 
 type AppState = "initial" | "categorizing" | "shopping";
 
@@ -58,7 +57,6 @@ export default function Home() {
   const [offlineWarning, setOfflineWarning] = useState(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(true);
-  const voiceFABRef = useRef<VoiceFABRef>(null);
 
   // Aggressive Cache Buster
   useEffect(() => {
@@ -189,11 +187,60 @@ export default function Home() {
   };
 
   const handleToggleItem = useCallback((itemId: string) => {
+    setCategories((prev) => {
+      let isChecking = false;
+
+      const nextCategories = prev.map((cat) => ({
+        ...cat,
+        items: cat.items.map((item) => {
+          if (item.id === itemId) {
+            isChecking = !item.checked;
+            return { ...item, checked: !item.checked };
+          }
+          return item;
+        }),
+      }));
+
+      // If the user just checked an item, find the next one
+      if (isChecking) {
+        const pendingItems = nextCategories.flatMap(c => c.items).filter(i => !i.checked);
+        if (pendingItems.length > 0) {
+          // Sort pending items according to CATEGORY_META keys order
+          const categoryOrder = Object.keys(CATEGORY_META);
+
+          const sortedPending = pendingItems.sort((a, b) => {
+            const indexA = categoryOrder.indexOf(a.category);
+            const indexB = categoryOrder.indexOf(b.category);
+            // If categories are the same, preserve original order, otherwise sort by layout order
+            return indexA - indexB;
+          });
+
+          const nextItem = sortedPending[0];
+
+          if (nextItem) {
+            const message = `סימנתי. כדאי לך לקחת עכשיו את ה${nextItem.name}.`;
+            setAssistantMessage(message);
+            setIsSpeaking(true);
+            speakHebrew(message).finally(() => setIsSpeaking(false));
+          }
+        } else {
+          const message = "סימנתי. סיימת את כל הרשימה, כל הכבוד!";
+          setAssistantMessage(message);
+          setIsSpeaking(true);
+          speakHebrew(message).finally(() => setIsSpeaking(false));
+        }
+      }
+
+      return nextCategories;
+    });
+  }, []);
+
+  const handleEditItem = useCallback((itemId: string, newName: string) => {
     setCategories((prev) =>
       prev.map((cat) => ({
         ...cat,
         items: cat.items.map((item) =>
-          item.id === itemId ? { ...item, checked: !item.checked } : item
+          item.id === itemId ? { ...item, name: newName } : item
         ),
       }))
     );
@@ -279,7 +326,6 @@ export default function Home() {
     async (text: string) => {
       if (text.length < 2) return;
       setIsProcessing(true);
-      voiceFABRef.current?.pauseListening();
 
       try {
         const res = await fetch("/api/assistant", {
@@ -339,9 +385,6 @@ export default function Home() {
         setAssistantMessage("שגיאה בתקשורת עם העוזר. בדקו חיבור לרשת.");
       } finally {
         setIsProcessing(false);
-        setTimeout(() => {
-          voiceFABRef.current?.resumeListening();
-        }, 800);
       }
     },
     [getAllItems, addNewItems, editItems, removeItems]
@@ -388,6 +431,7 @@ export default function Home() {
           <ShoppingList
             categories={categories}
             onToggleItem={handleToggleItem}
+            onEditItem={handleEditItem}
             onReset={handleResetRequest}
           />
 
@@ -425,13 +469,6 @@ export default function Home() {
           <CommandInput
             onSend={handleAssistantCommand}
             isProcessing={isProcessing}
-          />
-
-          <VoiceFAB
-            ref={voiceFABRef}
-            onTranscript={handleAssistantCommand}
-            isProcessing={isProcessing}
-            isMuted={isSpeaking}
           />
         </>
       )}

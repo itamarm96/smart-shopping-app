@@ -41,7 +41,7 @@ You MUST return your response ONLY as a valid JSON object with this structure:
 Rules:
 - Only include categories that have items
 - Each item should appear exactly once
-- Clean up item names but keep them in Hebrew
+- Clean up item names (strip verbs like "תוסיף", "תביא", "לקנות", "קניתי", "אני צריך") but keep them in Hebrew
 - If an item doesn't fit any specific category, put it in "אחר"
 - Do NOT include any text outside the JSON object`;
 

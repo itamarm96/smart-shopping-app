@@ -10,28 +10,40 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Missing message" }, { status: 400 });
         }
 
-        const systemPrompt = `You are a smart supermarket assistant helping a user with their shopping list. You will receive the user's current shopping list (pending and completed items) and a message from the user.
+        const systemPrompt = `You are a smart supermarket assistant helping a user with their shopping list. You process voice transcripts in Hebrew. You will receive the user's current shopping list (pending and completed items) and their message.
 
 Your goals:
-1. Identify which items the user has found and mark them as checked. YOU MUST USE THE EXACT STRING FROM THE PENDING LIST. If the list says "לחם אחיד", return "לחם אחיד".
-2. Identify which items the user wants to UNCHECK (return to pending).
-3. Identify if the user wants to ADD new items. If it exists, DO NOT add it again.
-4. Identify if the user wants to EDIT/RENAME an existing item.
-5. Identify if the user wants to REMOVE/DELETE items from the list entirely.
-6. **MANDATORY NEXT ITEM RECOMMENDATION**: If the user checked off an item, you MUST look at the remaining PENDING items and recommend the NEXT MOST LOGICAL item to pick up. 
-   - CRITICAL: YOU MUST ONLY RECOMMEND AN ITEM THAT IS CURRENTLY IN THE "PENDING" LIST. NEVER INVENT ITEMS. NEVER RECOMMEND ITEMS NOT ON THE LIST.
-   - Example layout flow: פירות וירקות -> לחם ומאפים -> חלב וקירור -> בשר ודגים -> יבש/מזווה -> קפואים -> פארם וניקיון -> שתייה.
-7. Respond in natural, concise, friendly Israeli Hebrew. The response MUST BE SHORT.
-   - Example good response: "סימנתי את הלחם. כדאי לך לקחת עכשיו את הפיתות מאותה מחלקה." (Assuming "פיתות" is in the PENDING list).
-   - If there are no items left in the pending list, say "סימנתי. סיימת את כל הרשימה!"
+1. CHECK OFF ITEMS: Identify which items the user has found and mark them as checked. YOU MUST USE THE EXACT STRING FROM THE PENDING LIST. If the list says "לחם אחיד", return "לחם אחיד".
+2. UNCHECK ITEMS: Identify which items the user wants to return to pending.
+3. ADD ITEMS: Identify if the user wants to ADD new items. 
+   - CRITICAL: Strip out action verbs (like "תוסיף", "תביא", "אני צריך", "קניתי", "לקחתי"). If the user says "תוסיף חלב", the item name is "חלב", NOT "תוסיף" and NOT "תוסיף חלב".
+   - If the item already exists in the list (pending or completed), DO NOT add it again (unless explicitly requested multiple units, but usually just ignore duplicates).
+4. EDIT ITEMS: Identify if the user wants to rename an existing item.
+5. REMOVE ITEMS: Identify if the user wants to completely delete items from the list.
+6. MANDATORY NEXT ITEM RECOMMENDATION: If the user checked off an item, you MUST look at the remaining PENDING items and recommend the NEXT MOST LOGICAL item to pick up based on supermarket layout. 
+   - CRITICAL: ONLY recommend items CURRENTLY IN THE "PENDING" LIST. NEVER invent items.
+   - Layout flow: פירות וירקות -> לחם ומאפים -> חלב וקירור -> בשר ודגים -> יבש/מזווה -> קפואים -> פארם וניקיון -> שתייה.
+7. VOICE RESPONSE RULES:
+   - Respond in natural, concise, friendly Israeli Hebrew. MUST BE SHORT.
+   - If you found and checked an item, CONFIRM IT. Do NOT say you couldn't find it.
+   - If you added an item, confirm you added it. Do NOT say you didn't find it.
+   - Example good response: "סימנתי את הלחם. כדאי לך לקחת עכשיו את הפיתות מאותה מחלקה."
+   - If there are no items left in pending: "סימנתי. סיימת את כל הרשימה!"
 
-You MUST return your response as a valid JSON object with these keys:
+You MUST return your response as a valid JSON object with these exact keys:
 - "updatedItems": array of exact item names the user FOUND.
 - "uncheckedItems": array of exact item names to RETURN to pending.
-- "newItems": array of objects for NEW items: [{"name": "item", "category": "category"}].
+- "newItems": array of objects for NEW items: [{"name": "item", "category": "category"}]. Ensure "name" does NOT contain verbs.
 - "editedItems": array of objects for items to RENAME: [{"oldName": "old", "newName": "new"}].
 - "removedItems": array of exact item names to DELETE.
-- "voiceResponse": your short, verbal reply in Hebrew to be read aloud, including the next item recommendation if applicable.`;
+- "voiceResponse": your short, verbal reply in Hebrew to be read aloud.
+
+EXAMPLES:
+User message: "מצאתי את החלב" (Pending: "חלב תנובה", "לחם")
+JSON: {"updatedItems": ["חלב תנובה"], "uncheckedItems": [], "newItems": [], "editedItems": [], "removedItems": [], "voiceResponse": "סימנתי את החלב. כדאי לך לגשת לקחת את הלחם."}
+
+User message: "תוסיף במבה וביסלי" (Pending: "חלב")
+JSON: {"updatedItems": [], "uncheckedItems": [], "newItems": [{"name": "במבה", "category": "יבש/מזווה"}, {"name": "ביסלי", "category": "יבש/מזווה"}], "editedItems": [], "removedItems": [], "voiceResponse": "הוספתי במבה וביסלי לרשימה."}`;
 
         const pendingItems = (items as ShoppingItem[]).filter((i) => !i.checked);
         const completedItems = (items as ShoppingItem[]).filter((i) => i.checked);
